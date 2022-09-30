@@ -41,7 +41,7 @@ pNum :: Parser Int
 pNum = lexeme $ do 
                   possNeg <- satisfy (\x -> x == '-')
                   ds      <- many1 (satisfy isDigit)
-                  num     <- return (possNeg : ds)
+                  num     <- return $ possNeg : ds
                   numRead <- return $ read num
                   if num == show numRead
                     then return numRead
@@ -79,16 +79,120 @@ isPrintAscii x = isPrint x && isAscii x && not (isSingleQuote x)
 isSingleQuote :: Char -> Bool
 isSingleQuote = (==) '\''
 
+
 -- ------------------------------------------ --
 --  TODO - figure out how to parse \' and \\  --
 -- ------------------------------------------ --
 {- Parses strings. -}
 pString :: Parser String
 pString = lexeme $ do
-                    fstSQuote <- satisfy isSingleQuote
-                    content   <- many (satisfy isPrintAscii)
-                    lstSQuote <- satisfy isSingleQuote
-                    return $ fstSQuote : content ++ [lstSQuote]
+                    satisfy isSingleQuote
+                    content <- many (satisfy isPrintAscii)
+                    satisfy isSingleQuote
+                    return $ content
+
+
+pOper :: String -> Parser String
+pOper s = lexeme $ do 
+                    operator <- string s
+                    return operator
+
+
+performOp :: String -> Stmt -> Stmt -> Either ParseError Stmt
+performOp op (SExp x) (SExp y) = case op of
+  "+"  -> Right $ SExp (Plus x y)
+  "-"  -> Right $ SExp (Minus x y)
+  "*"  -> Right $ SExp (Times x y)
+  "//" -> Right $ SExp (Div x y)
+  "%"  -> Right $ SExp (Mod x y)
+  "==" -> Right $ SExp (Eq x y)
+  "!=" -> Right $ SExp (Not (Eq x y))
+  "<"  -> Right $ SExp (Less x y)
+  "<=" -> Right $ SExp (Not (Greater x y))
+  ">"  -> Right $ SExp (Greater x y)
+  ">=" -> Right $ SExp (Not (Less x y))
+  "in" -> Right $ SExp (In x y)
+performOp op _ _ = Left "Statement defined inside of an expression"
+
+
+-------------------------------------------------------------------------------
+
+pProgram :: Parser Program
+pProgram = pStmts
+
+
+pStmts :: Parser [Stmt]
+pStmts = (do
+            fstStmt  <- pStmt
+            restStmt <- pStmtCon
+            return $ fstStmt : restStmt)
+
+
+pStmtCon :: Parser [Stmt]
+pStmtCon = (do
+              symbol ';'
+              currStmt <- pStmt
+              restStmt <- pStmtCon
+              return $ currStmt : restStmt)
+            <|> (do 
+                  return [])
+
+
+pStmt :: Parser Stmt
+pStmt = pExpr
+
+
+pExpr :: Parser Stmt
+pExpr = (do
+          t <- pTerm
+          pExprOpt t)
+
+
+pExprOpt :: Stmt -> Parser Stmt
+pExprOpt e1 = (do
+                operator <- pOper
+                e2       <- pExprOpt
+                operRes  <- return $ performOp operator e1 e2
+                case operRes of
+                  Left e -> fail e
+                  Right parsedStmt -> pExprOpt parsedStmt)
+              <|> (do
+                    return e1)
+
+
+rtVal :: Value -> Parser Stmt
+rtStmt x = return $ SExp (Const x)
+
+
+pTerm :: Parser Stmt
+pTerm = (do
+          n -> pNum
+          rtStmt $ IntVal n
+        <|> (do
+              str -> pString
+              rtStmt $ StringVal str)
+        <|> (do
+              keyword "None"
+              rtStmt NoneVal)
+        <|> (do
+              keyword "True"
+              rtStmt TrueVal)
+        <|> (do
+              keyword "False"
+              rtStmt FalseVal)
+        <|> (do
+              symbol "("
+              e <- pExpr
+              symbol ")"
+              return e)
+        <|> (do
+              name <- pIdent
+              ExprIdent name)
+        <|> (do
+              symbol '['
+              e <- ExprList
+              symbol ']'
+              return e)
 
 
 -------------------------------------------------------------------------------
