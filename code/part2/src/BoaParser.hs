@@ -152,6 +152,7 @@ addToList :: Exp -> Exp -> Either String Exp
 addToList x (List xs) = Right $ List x:xs
 addToList _ _         = Left "List construction: recursive result is not list"
 
+
 -------------------------------------------------------------------------------
 
 pProgram :: Parser Program
@@ -256,6 +257,35 @@ pExprNList st1 = (do
                       symbol "," 
                       sts <- pExprs
                       extractExp2e addToList st1 sts)
+                <|> extractExp (\x -> List [x]) st1 "Problem initializing list"
+
+
+pForClause :: Parser CClause
+pForClause = (do
+                keyword "for"
+                vname <- pIdent
+                keyword "in"
+                st <- pExpr
+                extractExp (CCFor vname) st "Bad expression in for loop")
+
+
+pIfClause :: Parser CClause
+pIfClause = (do
+              keyword "If"
+              st <- pExpr
+              extractExp (CCIf exp) st "Bad expression in If conditional")
+
+
+pClausez :: Parser [CClause]
+pClausez = (do
+              for     <- pForClause
+              restCls <- pClausez
+              return $ for : restCls)
+            <|> (do
+                  ifCond  <- pIfClause
+                  restCls <- pClausez
+                  return $ ifCond : restCls)
+            <|> return []
 
 
 -------------------------------------------------------------------------------
