@@ -98,22 +98,59 @@ pOper s = lexeme $ do
                     return operator
 
 
+opAndFunc :: [(String, Op)]
+opAndFunc = [("+", Plus),
+              ("-", Minus),
+              ("*", Times),
+              ("//", Div),
+              ("%", Mod),
+              ("==", Eq),
+              ("!=", \x y -> Not (Eq x y)),
+              ("<", Less),
+              ("<=", \x y -> Not (Greater x y)),
+              (">", Greater),
+              (">=", \x y -> Not (Less x y)),
+              ("in", In)]
+
+
 performOp :: String -> Stmt -> Stmt -> Either ParseError Stmt
-performOp op (SExp x) (SExp y) = case op of
-  "+"  -> Right $ SExp (Plus x y)
-  "-"  -> Right $ SExp (Minus x y)
-  "*"  -> Right $ SExp (Times x y)
-  "//" -> Right $ SExp (Div x y)
-  "%"  -> Right $ SExp (Mod x y)
-  "==" -> Right $ SExp (Eq x y)
-  "!=" -> Right $ SExp (Not (Eq x y))
-  "<"  -> Right $ SExp (Less x y)
-  "<=" -> Right $ SExp (Not (Greater x y))
-  ">"  -> Right $ SExp (Greater x y)
-  ">=" -> Right $ SExp (Not (Less x y))
-  "in" -> Right $ SExp (In x y)
+performOp op (SExp x) (SExp y) = case lookup op opAndFunc of
+  Just operation -> Right $ SExp (Oper operation x y)
+  Nothing        -> Left "Operation not defined"
 performOp op _ _ = Left "Statement defined inside of an expression"
 
+
+-------------------------------------------------------------------------------
+
+rtVal :: Value -> Parser Stmt
+rtVal x = return $ SExp (Const x)
+
+
+rtExp :: Exp -> Parser Stmt
+rtExp x = return $ SExp x
+
+
+extractExp :: (Exp -> Exp) -> Stmt -> String -> Parser Stmt
+extractExp f (SExp x) _ = rtExp (f x)
+extractExp _ _        e = fail e
+
+
+extractExp2 :: (Exp -> Exp -> Exp) -> Stmt -> Stmt -> String -> Parser Stmt
+extractExp2 f (SExp x) (SExp y) _ = return $ SExp (f x y)
+extractExp2 _ _        _        e = fail e
+
+
+extractExp2e :: (Exp -> Exp -> Either String Exp) -> Stmt -> Stmt -> String 
+                -> Parser Stmt
+extractExp2e f (SExp x) (SExp y) _ = case f x y of
+  Right val -> rtExp val
+  Left  e   -> fail e
+extractExp2e _ _        _        e = fail e
+
+
+addToList :: Exp -> Exp -> Either String Exp
+addToList x (List xs) = Right $ List x:xs
+addToList _ _         = Left "List construction: recursive result is not list"
 
 -------------------------------------------------------------------------------
 
@@ -134,8 +171,7 @@ pStmtCon = (do
               currStmt <- pStmt
               restStmt <- pStmtCon
               return $ currStmt : restStmt)
-            <|> (do 
-                  return [])
+            <|> return []
 
 
 pStmt :: Parser Stmt
@@ -149,50 +185,77 @@ pExpr = (do
 
 
 pExprOpt :: Stmt -> Parser Stmt
-pExprOpt e1 = (do
+pExprOpt st1 = (do
                 operator <- pOper
-                e2       <- pExprOpt
-                operRes  <- return $ performOp operator e1 e2
+                st2       <- pExpr
+                operRes  <- return $ performOp operator st1 st2
                 case operRes of
-                  Left e -> fail e
+                  Left e           -> fail e
                   Right parsedStmt -> pExprOpt parsedStmt)
-              <|> (do
-                    return e1)
-
-
-rtVal :: Value -> Parser Stmt
-rtStmt x = return $ SExp (Const x)
+              <|> return st1
 
 
 pTerm :: Parser Stmt
 pTerm = (do
-          n -> pNum
-          rtStmt $ IntVal n
+          n <- pNum
+          rtVal $ IntVal n)
         <|> (do
-              str -> pString
-              rtStmt $ StringVal str)
+              str <- pString
+              rtVal $ StringVal str)
         <|> (do
               keyword "None"
-              rtStmt NoneVal)
+              rtVal NoneVal)
         <|> (do
               keyword "True"
-              rtStmt TrueVal)
+              rtVal TrueVal)
         <|> (do
               keyword "False"
-              rtStmt FalseVal)
+              rtVal FalseVal)
         <|> (do
               symbol "("
-              e <- pExpr
+              st <- pExpr
               symbol ")"
-              return e)
+              return st)
         <|> (do
               name <- pIdent
-              ExprIdent name)
+              pExprIdent name)
         <|> (do
               symbol '['
-              e <- ExprList
+              st <- pExprList
               symbol ']'
-              return e)
+              return st)
+
+
+pExprIdent :: Parser Stmt
+pExprIdent vname = (do
+                    symbol '='
+                    e <- pExpr
+                    return $ SDef vname e)
+                  <|> (do
+                        symbol "("
+                        sts <- pExprz
+                        symbol ")"
+                        extractExp (Call vname) sts "Bad expression in Call")
+                  <|> rtExp $ Var vname
+
+
+pExprList :: Parser Stmt
+pExprList = (do
+              st1 <- pExpr
+              pExprNList st1)
+            <|> rtExp $ List []
+
+
+pExprNList :: Stmt -> Parser Stmt
+pExprNList st1 = (do
+                  for     <- pForClause
+                  restCls <- pClausez
+                  extractExp (\x -> Compr x (for : restCls)) st1 $
+                    "Bad expression in List comprehension")
+                <|> (do
+                      symbol "," 
+                      sts <- pExprs
+                      extractExp2e addToList st1 sts)
 
 
 -------------------------------------------------------------------------------
