@@ -1,7 +1,4 @@
-module BoaParser where
--- Skeleton file for Boa Parser.
-
--- module BoaParser (ParseError, parseString, main) where
+module BoaParser (ParseError, parseString) where
 
 -------------------------------------------------------------------------------
 
@@ -17,14 +14,6 @@ type Parser a = ReadP a
 
 baseKeywords = ["None", "True", "False", "for", "if", "in", "not"]
 
-lexeme :: Parser a -> Parser a
-lexeme p = do a <- p; skipSpaces; return a
-
-
--- textParser :: String -> String
--- textParser wholeTxt = f wholeTxt "" where
---   f "" wholeTxt = head wholeTxt
-
 -------------------------------------------------------------------------------
 
 token :: Parser a -> Parser a
@@ -32,23 +21,25 @@ token p = skipSpaces >> p
 
 
 symbol :: String -> Parser ()
-symbol s = lexeme $ do string s; return ()
+symbol s = token $ do string s; return ()
 
+-------------------------------------------------------------------------------
 
 {- Determines if the given string is the keyword defined. -}
 keyword :: String -> Parser ()
-keyword s = lexeme $ do 
-                        s' <- many1 (satisfy isAlphaNum)
-                        if s' == s 
-                          then return ()
-                          else fail $ "expected " ++ s
+keyword s = token $ do 
+                      s'    <- many1 (satisfy isAlphaNum)
+                      satisfy (\x -> not (isAlphaNum x) || x == '_')
+                      if s' == s 
+                        then return ()
+                        else fail $ "expected " ++ s
 
 
 {- Parses a number while checking if the number has leading zeros. If it has 
   then it outputs an error. -}
 pNum :: Parser Int
-pNum = lexeme $ do 
-                  possNeg <- munch ((==) '-')
+pNum = token $ do 
+                  possNeg <- munch ('-' ==)
                   fst     <- satisfy isDigit
                   ds      <- many (satisfy isDigit)
                   let num = possNeg ++ (fst : ds)
@@ -57,6 +48,9 @@ pNum = lexeme $ do
                     then fail "Error" 
                     else return result
 
+
+-------------------------------------------------------------------------------
+-- Parsing variable definitions
 
 {- Checks if a character is a valid first character of a variable name. -}
 isFstIdentLetter :: Char -> Bool
@@ -68,26 +62,30 @@ isRestIdent :: Char -> Bool
 isRestIdent x = isAlphaNum x || x == '_'
 
 
--- ------------------------------------------------------ --
---  TODO - figure out what to do when it reads a keyword  --
--- ------------------------------------------------------ --
+-- ----------------------------- --
+--  Is ambiguous with keywoard   --
+-- ----------------------------- --
 {- Parses variable names. -}
 pIdent :: Parser String
-pIdent = lexeme $ do 
-                    fstIdent    <- satisfy isFstIdentLetter
-                    isRestIdent <- many (satisfy isRestIdent)
-                    let varName = fstIdent : isRestIdent
-                    if varName `elem` baseKeywords
-                      then fail "Read keywords instead of variable"
-                      else return varName
+pIdent = token $ do 
+                  fstIdent    <- satisfy isFstIdentLetter
+                  isRestIdent <- many (satisfy isRestIdent)
+                  let varName = fstIdent : isRestIdent
+                  if varName `elem` baseKeywords
+                    then fail "Read keywords instead of variable"
+                    else return varName
+
+
+-------------------------------------------------------------------------------
+-- Parsing Strings
 
 
 isSQuote :: Char -> Bool
-isSQuote = (==) '\''
+isSQuote = ('\'' ==)
 
 
 isBackSlx :: Char -> Bool
-isBackSlx = (==) '\\'
+isBackSlx = ('\\' ==)
 
 
 isPrintAscii :: Char -> Bool
@@ -97,12 +95,9 @@ isPrintAscii x = isPrint x &&
   not (isBackSlx x)
 
 
--- ------------------------------------------ --
---  TODO - figure out how to parse \' and \\  --
--- ------------------------------------------ --
 {- Parses strings. -}
 pString :: Parser String
-pString = lexeme $ 
+pString = token $ 
   do
     satisfy isSQuote
     text <- pIEText
@@ -121,13 +116,13 @@ pText = (do
           pScpd)
         <|> (do
               content <- satisfy isPrintAscii
-              rest <- pIEText
+              rest    <- pIEText
               return $ content : rest)
 
 
 pScpd :: Parser String
 pScpd = (do
-          satisfy ('n'==)
+          satisfy ('n' ==)
           rest <- pIEText
           return $ '\n' : rest)
           <|> (do
@@ -139,85 +134,44 @@ pScpd = (do
                 rest <- pIEText
                 return $ '\'' : rest)
           <|> (do
-                satisfy ((==) '\n')
+                satisfy ('\n' ==)
                 pIEText)
           <|> fail "Error"
 
 
-isMathOpF :: Char -> Bool
-isMathOpF x = x `elem` "+-*%=<>!"
-
-
-isMathOpC :: Char -> Char -> Bool
-isMathOpC p c 
-  | elem p "!=<>" && c == '=' = True
-  | p == '/'      && c == '/' = True
-  | otherwise = False
-
-
--- pOper :: Parser String
--- pOper = lexeme $ do 
---                   fst <- satisfy isMathOpF
---                   rest <- satisfy (isMathOpC fst)
---                   return $ fst : [] --[rest]
-
-
--- listOp :: [(String, Exp -> Exp -> Exp)]
--- listOp = [("+",  Oper Plus),
---           ("-",  Oper Minus),
---           ("*",  Oper Times),
---           ("//", Oper Div),
---           ("%",  Oper Mod),
---           ("==", Oper Eq),
---           ("!=", \x y -> Not $ Oper Eq x y),
---           ("<",  Oper Less),
---           ("<=", \x y -> Not $ Oper Greater x y),
---           (">",  Oper Greater),
---           (">=", \x y -> Not $ Oper Less x y)]
-
 -------------------------------------------------------------------------------
 
+{- Converts a Value to a Stmt and lifts it for the parser. -}
 rtVal :: Value -> Parser Stmt
 rtVal x = return $ SExp (Const x)
 
 
+{- Converts an Exp to a Stmt and lifts it for the parser. -}
 rtExp :: Exp -> Parser Stmt
 rtExp x = return $ SExp x
 
 
--- performOp :: String -> Stmt -> Stmt -> Parser Stmt
--- performOp op (SExp x) (SExp y) = case lookup op listOp of
---   Just val -> rtExp $ val x y
---   Nothing  -> fail "Operator not defined"
--- performOp _  _        _        = fail "Bad expression used in operation"
-
-
+{- Works similar to LiftA or fmap, it applies to a function to the value (Exp) 
+  inside a structure (Stmt) and returns result of the application of the 
+  function on the value inside of the structure. Additionally, if there is an 
+  error it passes the error to the parsing structure. -}
 extractExp :: (Exp -> Exp) -> Stmt -> String -> Parser Stmt
 extractExp f (SExp x) _ = rtExp (f x)
 extractExp _ _        e = fail e
 
 
+{- Very similar to the previous expression but the function also modifies the
+  value inside of the structure. -}
 extractExpC :: (Exp -> CClause) -> Stmt -> String -> Parser CClause
 extractExpC f (SExp x) _ = return (f x)
 extractExpC _ _        e = fail e
 
 
+{- Very similar to the previous two functions but this time it is applied to 2
+  value in the same that LiftA2 is. -}
 extractExp2 :: (Exp -> Exp -> Exp) -> Stmt -> Stmt -> String -> Parser Stmt
 extractExp2 f (SExp x) (SExp y) _ = rtExp $ f x y 
 extractExp2 _ _        _        e = fail e
-
-
--- extractExp2e :: (Exp -> Exp -> Either String Exp) -> Stmt -> Stmt -> String 
---                 -> Parser Stmt
--- extractExp2e f (SExp x) (SExp y) _ = case f x y of
---   Right val -> rtExp val
---   Left  e   -> fail e
--- extractExp2e _ _        _        e = fail e
-
-
--- addToList :: Exp -> Exp -> Either String Exp
--- addToList x (List xs) = Right $ List (x:xs)
--- addToList _ _         = Left "List construction: recursive result is not list"
 
 
 -------------------------------------------------------------------------------
@@ -273,6 +227,11 @@ pExprOpt st1 = (do
                       st2 <- pExpr
                       extractExp2 (Oper Div) st1 st2
                         "Bad expression in 'Div' operation")
+                <|> (do
+                      symbol "%"
+                      st2 <- pExpr
+                      extractExp2 (Oper Mod) st1 st2
+                        "Bad expression in 'Modulus' operation")
                 <|> (do
                       symbol "=="
                       st2 <- pExpr
@@ -440,6 +399,3 @@ parseString s = case readP_to_S (pProgram <* token eof) s of
   []       -> Left "Parsing Error"
   [(a, _)] -> Right a
   _        -> error "oops, my grammar is ambiguous!"
-
-
-main = parseString "-3"

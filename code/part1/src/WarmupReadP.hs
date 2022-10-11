@@ -27,7 +27,7 @@ data Exp = Num Int | Negate Exp | Add Exp Exp
   deriving (Eq, Show)
 
 
-token :: ReadP a -> Parser a
+token :: Parser a -> Parser a
 token p = skipSpaces >> p
 
 
@@ -35,18 +35,14 @@ isDigit :: Char -> Bool
 isDigit x = elem x $ enumFromTo '0' '9'
 
 
-lexeme :: Parser a -> Parser a
-lexeme p = do a <- p; skipSpaces; return a
-
-
 symbol :: String -> Parser ()
-symbol s = lexeme $ do string s; return ()
+symbol s = token $ do string s; return ()
 
 
 pNum :: Parser Int
-pNum = lexeme $ do 
-                  ds <- many1 (satisfy isDigit)
-                  return $ read ds  
+pNum = token $ do 
+                ds <- many1 (satisfy isDigit)
+                return $ read ds  
 
 
 pExp :: Parser Exp
@@ -56,7 +52,7 @@ pExp = (do
     <|> (do 
           symbol "-"
           t <- pTerm
-          return (Negate t))
+          pEopt (Negate t))
 
 
 pEopt :: Exp -> Parser Exp
