@@ -20,8 +20,47 @@ token :: Parser a -> Parser a
 token p = skipSpaces >> p
 
 
-symbol :: String -> Parser ()
-symbol s = token $ do string s; return ()
+symbol :: Char -> Parser ()
+symbol s = do
+            satisfy (== s)
+            pWhitespaceZ
+            return ()
+
+
+longSymbol :: String -> Parser ()
+longSymbol ("")    = do pWhitespaceZ ; return () 
+longSymbol (l:wrd) = do
+                        satisfy (== l)
+                        longSymbol wrd
+
+
+-------------------------------------------------------------------------------
+-- parsing the whitespace
+
+eol :: ReadP ()
+eol = choice [char '\n' >> return (), eof]
+
+
+pWhitespaces :: Parser ()
+pWhitespaces = (do
+            satisfy isSpace
+            pWhitespaceZ)
+            <|> (do
+                  satisfy (=='#')
+                  manyTill get eol
+                  pWhitespaceZ)
+
+
+pWhitespaceZ :: Parser ()
+pWhitespaceZ = (do
+                  satisfy isSpace
+                  pWhitespaceZ)
+                  <|> (do
+                        satisfy (=='#')
+                        manyTill get eol
+                        pWhitespaceZ)
+                  <|> return ()
+
 
 -------------------------------------------------------------------------------
 
@@ -38,15 +77,16 @@ keyword s = token $ do
 {- Parses a number while checking if the number has leading zeros. If it has 
   then it outputs an error. -}
 pNum :: Parser Int
-pNum = token $ do 
-                  possNeg <- munch ('-' ==)
-                  fst     <- satisfy isDigit
-                  ds      <- many (satisfy isDigit)
-                  let num = possNeg ++ (fst : ds)
-                  let result = read num :: Int
-                  if fst == '0' && result /= 0 && length possNeg <= 1
-                    then fail "Error" 
-                    else return result
+pNum = do 
+            possNeg <- munch ('-' ==)
+            fst     <- satisfy isDigit
+            ds      <- many (satisfy isDigit)
+            pWhitespaceZ
+            let num = possNeg ++ (fst : ds)
+            let result = read num :: Int
+            if fst == '0' && result /= 0 && length possNeg <= 1
+                  then fail "Error" 
+                  else return result
 
 
 -------------------------------------------------------------------------------
@@ -67,13 +107,14 @@ isRestIdent x = isAlphaNum x || x == '_'
 -- ----------------------------- --
 {- Parses variable names. -}
 pIdent :: Parser String
-pIdent = token $ do 
-                  fstIdent    <- satisfy isFstIdentLetter
-                  isRestIdent <- many (satisfy isRestIdent)
-                  let varName = fstIdent : isRestIdent
-                  if varName `elem` baseKeywords
-                    then fail "Read keywords instead of variable"
-                    else return varName
+pIdent = do 
+            fstIdent    <- satisfy isFstIdentLetter
+            isRestIdent <- many (satisfy isRestIdent)
+            pWhitespaceZ
+            let varName = fstIdent : isRestIdent
+            if varName `elem` baseKeywords
+                  then fail "Read keywords instead of variable"
+                  else return varName
 
 
 -------------------------------------------------------------------------------
@@ -177,7 +218,9 @@ extractExp2 _ _        _        e = fail e
 -------------------------------------------------------------------------------
 
 pProgram :: Parser Program
-pProgram = pStmts
+pProgram = do
+            pWhitespaceZ
+            pStmts
 
 
 pStmts :: Parser [Stmt]
@@ -189,7 +232,7 @@ pStmts = do
 
 pStmtCon :: Parser [Stmt]
 pStmtCon = (do
-              symbol ";"
+              symbol ';'
               currStmt <- pStmt
               restStmt <- pStmtCon
               return $ currStmt : restStmt)
@@ -208,57 +251,57 @@ pExpr = do
 
 pExprOpt :: Stmt -> Parser Stmt
 pExprOpt st1 = (do 
-                  symbol "+"
+                  symbol '+'
                   st2 <- pExpr
                   extractExp2 
                     (Oper Plus) st1 st2 "Bad expression in 'Plus' operation")
                 <|> (do
-                      symbol "-"
+                      symbol '-'
                       st2 <- pExpr
                       extractExp2 (Oper Minus) st1 st2 
                         "Bad expression in 'Minus' operation")
                 <|> (do
-                      symbol "*"
+                      symbol '*'
                       st2 <- pExpr
                       extractExp2 (Oper Times) st1 st2
                         "Bad expression in 'Times' operation")
                 <|> (do
-                      symbol "//"
+                      longSymbol "//"
                       st2 <- pExpr
                       extractExp2 (Oper Div) st1 st2
                         "Bad expression in 'Div' operation")
                 <|> (do
-                      symbol "%"
+                      symbol '%'
                       st2 <- pExpr
                       extractExp2 (Oper Mod) st1 st2
                         "Bad expression in 'Modulus' operation")
                 <|> (do
-                      symbol "=="
+                      longSymbol "=="
                       st2 <- pExpr
                       extractExp2 (Oper Eq) st1 st2
                         "Bad expression in 'Eq' operation")
                 <|> (do
-                      symbol "!="
+                      longSymbol "!="
                       st2 <- pExpr
                       extractExp2 (\x y -> Not $ Oper Eq x y) st1 st2
                         "Bad expression in 'Not Eq' operation")
                 <|> (do
-                      symbol "<"
+                      symbol '<'
                       st2 <- pExpr
                       extractExp2 
                         (Oper Less) st1 st2 "Bad expression in 'Eq' operation")
                 <|> (do
-                      symbol "<="
+                      longSymbol "<="
                       st2 <- pExpr
                       extractExp2 (\x y -> Not $ Oper Greater x y) st1 st2
                         "Bad expression in 'Eq' operation")
                 <|> (do
-                      symbol ">"
+                      symbol '>'
                       st2 <- pExpr
                       extractExp2 (Oper Greater) st1 st2 
                         "Bad expression in 'Eq' operation")
                 <|> (do
-                      symbol ">="
+                      longSymbol ">="
                       st2 <- pExpr
                       extractExp2 (\x y -> Not $ Oper Less x y) st1 st2
                         "Bad expression in 'Eq' operation")
@@ -291,31 +334,32 @@ pTerm = (do
               st <- pExpr
               extractExp Not st "Error")
         <|> (do
-              symbol "("
+              symbol '('
               st <- pExpr
-              symbol ")"
+              symbol ')'
               return st)
         <|> (do
               name <- pIdent
               pExprIdent name)
         <|> (do
-              symbol "["
+              symbol '['
               st <- pExprList
-              symbol "]"
+              symbol ']'
               return st)
 
 
 pExprIdent :: String -> Parser Stmt
 pExprIdent vname = (do
-                    symbol "="
+                    satisfy (== '=')
+                    pWhitespaceZ
                     st <- pExpr
                     case st of
                         SExp e -> return $ SDef vname e
                         _       -> fail "Bad expression while creating var")
                   <|> (do
-                        symbol "("
+                        symbol '('
                         sts <- pExprz
-                        symbol ")"
+                        symbol ')'
                         rtExp (Call vname sts))
                   <|> rtExp (Var vname)
 
@@ -334,7 +378,7 @@ pExprNList st1 = (do
                   extractExp (\x -> Compr x (for : restCls)) st1
                     "Bad expression in List comprehension")
                 <|> (do
-                      symbol ","
+                      symbol ','
                       es <- pExprs
                       case st1 of
                         SExp e1 -> rtExp $ List (e1 : es)
@@ -386,7 +430,7 @@ pExprs = do
 
 pExprCon :: Parser [Exp]
 pExprCon = (do
-              symbol ","
+              symbol ','
               pExprs)
             <|> return []
 
@@ -395,7 +439,7 @@ pExprCon = (do
 
 
 parseString :: String -> Either ParseError Program
-parseString s = case readP_to_S (pProgram <* token eof) s of
+parseString s = case readP_to_S (pProgram <* eof) s of
   []       -> Left "Parsing Error"
   [(a, _)] -> Right a
   _        -> error "oops, my grammar is ambiguous!"
