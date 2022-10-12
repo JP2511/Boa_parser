@@ -15,10 +15,7 @@ type Parser a = ReadP a
 baseKeywords = ["None", "True", "False", "for", "if", "in", "not"]
 
 -------------------------------------------------------------------------------
-
-token :: Parser a -> Parser a
-token p = skipSpaces >> p
-
+-- parsing symbols
 
 symbol :: Char -> Parser ()
 symbol s = do
@@ -62,16 +59,22 @@ pWhitespaceZ = (do
                   <|> return ()
 
 
+isSpaceOrOther :: Char -> Bool
+isSpaceOrOther l = isSpace l || l `elem` "()[],=<>!/%;*+-"
+
+
 -------------------------------------------------------------------------------
+
 
 {- Determines if the given string is the keyword defined. -}
 keyword :: String -> Parser ()
-keyword s = token $ do 
-                      s'    <- many1 (satisfy isAlphaNum)
-                      satisfy (\x -> not (isAlphaNum x) || x == '_')
-                      if s' == s 
-                        then return ()
-                        else fail $ "expected " ++ s
+keyword s = do 
+                  s' <- many1 (satisfy isAlphaNum)
+                  addSpaceOrNot
+                  if s' == s 
+                  then return ()
+                  else fail $ "expected " ++ s
+
 
 
 {- Parses a number while checking if the number has leading zeros. If it has 
@@ -113,8 +116,62 @@ pIdent = do
             pWhitespaceZ
             let varName = fstIdent : isRestIdent
             if varName `elem` baseKeywords
-                  then fail "Read keywords instead of variable"
-                  else return varName
+                then fail "Read keywords instead of variable"
+                else return varName
+
+
+pAtom :: Parser Stmt
+pAtom = (do
+            letter <- satisfy isAlpha
+            pKey [letter])
+            <|> (do
+                  symbol '_'
+                  pIden "_")
+
+
+judger :: String -> Parser Stmt
+judger wrd
+  | wrd == "None"  = rtVal NoneVal
+  | wrd == "True"  = rtVal TrueVal
+  | wrd == "False" = rtVal FalseVal
+  | wrd == "not"   = do
+                      st <- pExpr
+                      extractExp Not st "Error"
+  | otherwise      = if wrd `elem` baseKeywords
+                      then fail "error"
+                      else pExprIdent wrd
+
+
+addSpaceOrNot :: Parser ()
+addSpaceOrNot = do
+                  rest <- look
+                  if rest == "" || (isSpaceOrOther $ head rest)
+                    then pWhitespaceZ
+                    else pWhitespaces
+
+
+pKey :: String -> Parser Stmt
+pKey wrd = (do
+              letter <- satisfy isAlphaNum
+              pKey $ wrd ++ [letter])
+              <|> (do
+                    symbol '_'
+                    pIden $ wrd ++ "_")
+              <|> (do
+                    addSpaceOrNot
+                    judger wrd)
+
+
+pIden :: String -> Parser Stmt
+pIden wrd = (do
+              letter <- satisfy isAlphaNum
+              pIden $ wrd ++ [letter])
+              <|> (do
+                    symbol '_'
+                    pIden $ wrd ++ "_")
+              <|> (do
+                    addSpaceOrNot
+                    pExprIdent wrd)
 
 
 -------------------------------------------------------------------------------
@@ -138,12 +195,12 @@ isPrintAscii x = isPrint x &&
 
 {- Parses strings. -}
 pString :: Parser String
-pString = token $ 
-  do
-    satisfy isSQuote
-    text <- pIEText
-    satisfy isSQuote
-    return text
+pString = do
+            satisfy isSQuote
+            text <- pIEText
+            satisfy isSQuote
+            pWhitespaceZ
+            return text
 
 
 pIEText :: Parser String
@@ -250,67 +307,94 @@ pExpr = do
 
 
 pExprOpt :: Stmt -> Parser Stmt
-pExprOpt st1 = (do 
-                  symbol '+'
-                  st2 <- pExpr
-                  extractExp2 
-                    (Oper Plus) st1 st2 "Bad expression in 'Plus' operation")
-                <|> (do
-                      symbol '-'
-                      st2 <- pExpr
-                      extractExp2 (Oper Minus) st1 st2 
-                        "Bad expression in 'Minus' operation")
-                <|> (do
-                      symbol '*'
-                      st2 <- pExpr
-                      extractExp2 (Oper Times) st1 st2
-                        "Bad expression in 'Times' operation")
-                <|> (do
-                      longSymbol "//"
-                      st2 <- pExpr
-                      extractExp2 (Oper Div) st1 st2
-                        "Bad expression in 'Div' operation")
-                <|> (do
+pExprOpt st = pRelExprOpt st 
+              <|> pNonRelExprOpt st
+              <|> return st
+
+
+pNonRelExpr :: Parser Stmt
+pNonRelExpr = do
+          t <- pTerm
+          pNRExprOpt t
+
+
+pNRExprOpt :: Stmt -> Parser Stmt
+pNRExprOpt st = pNonRelExprOpt st
+              <|> return st
+
+
+pRelExprOpt :: Stmt -> Parser Stmt
+pRelExprOpt st1 = (do
                       symbol '%'
-                      st2 <- pExpr
+                      st2 <- pNonRelExpr
                       extractExp2 (Oper Mod) st1 st2
                         "Bad expression in 'Modulus' operation")
-                <|> (do
-                      longSymbol "=="
-                      st2 <- pExpr
-                      extractExp2 (Oper Eq) st1 st2
-                        "Bad expression in 'Eq' operation")
-                <|> (do
-                      longSymbol "!="
-                      st2 <- pExpr
-                      extractExp2 (\x y -> Not $ Oper Eq x y) st1 st2
-                        "Bad expression in 'Not Eq' operation")
-                <|> (do
-                      symbol '<'
-                      st2 <- pExpr
-                      extractExp2 
-                        (Oper Less) st1 st2 "Bad expression in 'Eq' operation")
-                <|> (do
-                      longSymbol "<="
-                      st2 <- pExpr
-                      extractExp2 (\x y -> Not $ Oper Greater x y) st1 st2
-                        "Bad expression in 'Eq' operation")
-                <|> (do
-                      symbol '>'
-                      st2 <- pExpr
-                      extractExp2 (Oper Greater) st1 st2 
-                        "Bad expression in 'Eq' operation")
-                <|> (do
-                      longSymbol ">="
-                      st2 <- pExpr
-                      extractExp2 (\x y -> Not $ Oper Less x y) st1 st2
-                        "Bad expression in 'Eq' operation")
-                <|> (do
-                      keyword "in"
-                      st2 <- pExpr
-                      extractExp2 (Oper In) st1 st2
-                        "Bad expression in 'In' operation")
-              <|> return st1
+                  <|> (do
+                        longSymbol "=="
+                        st2 <- pNonRelExpr
+                        extractExp2 (Oper Eq) st1 st2
+                          "Bad expression in 'Eq' operation")
+                  <|> (do
+                        longSymbol "!="
+                        st2 <- pNonRelExpr
+                        extractExp2 (\x y -> Not $ Oper Eq x y) st1 st2
+                          "Bad expression in 'Not Eq' operation")
+                  <|> (do
+                        symbol '<'
+                        st2 <- pNonRelExpr
+                        extractExp2 
+                          (Oper Less) st1 st2 
+                            "Bad expression in 'Eq' operation")
+                  <|> (do
+                        longSymbol "<="
+                        st2 <- pNonRelExpr
+                        extractExp2 (\x y -> Not $ Oper Greater x y) st1 st2
+                          "Bad expression in 'Eq' operation")
+                  <|> (do
+                        symbol '>'
+                        st2 <- pNonRelExpr
+                        extractExp2 (Oper Greater) st1 st2 
+                          "Bad expression in 'Eq' operation")
+                  <|> (do
+                        longSymbol ">="
+                        st2 <- pNonRelExpr
+                        extractExp2 (\x y -> Not $ Oper Less x y) st1 st2
+                          "Bad expression in 'Eq' operation")
+                  <|> (do
+                        keyword "in"
+                        st2 <- pNonRelExpr
+                        extractExp2 (Oper In) st1 st2
+                          "Bad expression in 'In' operation")
+                    <|> (do
+                        keyword "not"
+                        keyword "in"
+                        st2 <- pNonRelExpr
+                        extractExp2 (\x y -> Not $ Oper In x y) st1 st2
+                          "Bad expression in 'In' operation")
+
+
+pNonRelExprOpt :: Stmt -> Parser Stmt
+pNonRelExprOpt st1 = (do 
+                        symbol '+'
+                        st2 <- pExpr
+                        extractExp2 
+                          (Oper Plus) st1 st2 
+                            "Bad expression in 'Plus' operation")
+                      <|> (do
+                            symbol '-'
+                            st2 <- pExpr
+                            extractExp2 (Oper Minus) st1 st2 
+                              "Bad expression in 'Minus' operation")
+                      <|> (do
+                            symbol '*'
+                            st2 <- pExpr
+                            extractExp2 (Oper Times) st1 st2
+                              "Bad expression in 'Times' operation")
+                      <|> (do
+                            longSymbol "//"
+                            st2 <- pExpr
+                            extractExp2 (Oper Div) st1 st2
+                              "Bad expression in 'Div' operation")
 
 
 pTerm :: Parser Stmt
@@ -320,27 +404,12 @@ pTerm = (do
         <|> (do
               str <- pString
               rtVal $ StringVal str)
-        <|> (do
-              keyword "None"
-              rtVal NoneVal)
-        <|> (do
-              keyword "True"
-              rtVal TrueVal)
-        <|> (do
-              keyword "False"
-              rtVal FalseVal)
-        <|> (do
-              keyword "not"
-              st <- pExpr
-              extractExp Not st "Error")
+        <|> pAtom
         <|> (do
               symbol '('
               st <- pExpr
               symbol ')'
               return st)
-        <|> (do
-              name <- pIdent
-              pExprIdent name)
         <|> (do
               symbol '['
               st <- pExprList
@@ -397,7 +466,7 @@ pForClause = do
 
 pIfClause :: Parser CClause
 pIfClause = do
-              keyword "If"
+              keyword "if"
               st <- pExpr
               extractExpC CCIf st "Bad expression in If conditional"
 
