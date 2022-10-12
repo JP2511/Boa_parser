@@ -6,6 +6,7 @@ import BoaAST
 import Data.Char
 import Text.ParserCombinators.ReadP
 import Control.Applicative ((<|>))
+import Control.Monad (void)
 
 -------------------------------------------------------------------------------
 
@@ -25,7 +26,7 @@ symbol s = do
 
 
 longSymbol :: String -> Parser ()
-longSymbol ("")    = do pWhitespaceZ ; return () 
+longSymbol ""      = do pWhitespaceZ ; return () 
 longSymbol (l:wrd) = do
                         satisfy (== l)
                         longSymbol wrd
@@ -35,7 +36,7 @@ longSymbol (l:wrd) = do
 -- parsing the whitespace
 
 eol :: ReadP ()
-eol = choice [char '\n' >> return (), eof]
+eol = choice [void (char '\n'), eof]
 
 
 pWhitespaces :: Parser ()
@@ -105,9 +106,6 @@ isRestIdent :: Char -> Bool
 isRestIdent x = isAlphaNum x || x == '_'
 
 
--- ----------------------------- --
---  Is ambiguous with keywoard   --
--- ----------------------------- --
 {- Parses variable names. -}
 pIdent :: Parser String
 pIdent = do 
@@ -119,6 +117,9 @@ pIdent = do
                 then fail "Read keywords instead of variable"
                 else return varName
 
+
+-------------------------------------------------------------------------------
+-- Parses atoms. These can be names of variables or keywords.
 
 pAtom :: Parser Stmt
 pAtom = (do
@@ -145,7 +146,7 @@ judger wrd
 addSpaceOrNot :: Parser ()
 addSpaceOrNot = do
                   rest <- look
-                  if rest == "" || (isSpaceOrOther $ head rest)
+                  if rest == "" || isSpaceOrOther (head rest)
                     then pWhitespaceZ
                     else pWhitespaces
 
@@ -273,6 +274,7 @@ extractExp2 _ _        _        e = fail e
 
 
 -------------------------------------------------------------------------------
+-- top level parsing
 
 pProgram :: Parser Program
 pProgram = do
@@ -300,102 +302,190 @@ pStmt :: Parser Stmt
 pStmt = pExpr
 
 
+-------------------------------------------------------------------------------
+-- Initializes expression parsing
+
 pExpr :: Parser Stmt
 pExpr = do
           t <- pTerm
-          pExprOpt t
+          pFstExprOpt t
 
 
-pExprOpt :: Stmt -> Parser Stmt
-pExprOpt st = pRelExprOpt st 
-              <|> pNonRelExprOpt st
-              <|> return st
+pFstExprOpt :: Stmt -> Parser Stmt
+pFstExprOpt st = pFstNR st
+                  <|> pFstRel st
+                  <|> return st
 
 
-pNonRelExpr :: Parser Stmt
-pNonRelExpr = do
-          t <- pTerm
-          pNRExprOpt t
+pFstNR :: Stmt -> Parser Stmt
+pFstNR st0 = (do
+                symbol '+'
+                st1 <- pTerm
+                pExprOpt (Oper Plus) st0 st1 False)
+              <|> (do
+                    symbol '-'
+                    st1 <- pTerm
+                    pExprOpt (Oper Minus) st0 st1 False)
+              <|> (do
+                    symbol '*'
+                    st1 <- pTerm
+                    pExprOpt (Oper Times) st0 st1 True)
+              <|> (do
+                    longSymbol "//"
+                    st1 <- pTerm
+                    pExprOpt (Oper Div) st0 st1 True)
+              <|> (do
+                    symbol '%'
+                    st1 <- pTerm
+                    pExprOpt (Oper Mod) st0 st1 True)
 
 
-pNRExprOpt :: Stmt -> Parser Stmt
-pNRExprOpt st = pNonRelExprOpt st
-              <|> return st
+pFstRel :: Stmt -> Parser Stmt
+pFstRel st1 = 
+  (do
+    longSymbol "=="
+    st2 <- pTerm
+    pNRop (Oper Eq) st1 st2 False)
+  <|> (do
+        longSymbol "!="
+        st2 <- pTerm
+        pNRop (\x y -> Not $ Oper Eq x y) st1 st2 False)
+  <|> (do
+        symbol '<'
+        st2 <- pTerm
+        pNRop (Oper Less) st1 st2 False)
+  <|> (do
+        longSymbol "<="
+        st2 <- pTerm
+        pNRop (\x y -> Not $ Oper Greater x y) st1 st2 False)
+  <|> (do
+        symbol '>'
+        st2 <- pTerm
+        pNRop (Oper Greater) st1 st2 False)
+  <|> (do
+        longSymbol ">="
+        st2 <- pTerm
+        pNRop (\x y -> Not $ Oper Less x y) st1 st2 False)
+  <|> (do
+        keyword "in"
+        st2 <- pTerm
+        pNRop (Oper In) st1 st2 False)
+  <|> (do
+        keyword "not"
+        keyword "in"
+        st2 <- pTerm
+        pNRop (\x y -> Not $ Oper In x y) st1 st2 False)
 
 
-pRelExprOpt :: Stmt -> Parser Stmt
-pRelExprOpt st1 = (do
-                      symbol '%'
-                      st2 <- pNonRelExpr
-                      extractExp2 (Oper Mod) st1 st2
-                        "Bad expression in 'Modulus' operation")
-                  <|> (do
-                        longSymbol "=="
-                        st2 <- pNonRelExpr
-                        extractExp2 (Oper Eq) st1 st2
-                          "Bad expression in 'Eq' operation")
-                  <|> (do
-                        longSymbol "!="
-                        st2 <- pNonRelExpr
-                        extractExp2 (\x y -> Not $ Oper Eq x y) st1 st2
-                          "Bad expression in 'Not Eq' operation")
-                  <|> (do
-                        symbol '<'
-                        st2 <- pNonRelExpr
-                        extractExp2 
-                          (Oper Less) st1 st2 
-                            "Bad expression in 'Eq' operation")
-                  <|> (do
-                        longSymbol "<="
-                        st2 <- pNonRelExpr
-                        extractExp2 (\x y -> Not $ Oper Greater x y) st1 st2
-                          "Bad expression in 'Eq' operation")
-                  <|> (do
-                        symbol '>'
-                        st2 <- pNonRelExpr
-                        extractExp2 (Oper Greater) st1 st2 
-                          "Bad expression in 'Eq' operation")
-                  <|> (do
-                        longSymbol ">="
-                        st2 <- pNonRelExpr
-                        extractExp2 (\x y -> Not $ Oper Less x y) st1 st2
-                          "Bad expression in 'Eq' operation")
-                  <|> (do
-                        keyword "in"
-                        st2 <- pNonRelExpr
-                        extractExp2 (Oper In) st1 st2
-                          "Bad expression in 'In' operation")
-                    <|> (do
-                        keyword "not"
-                        keyword "in"
-                        st2 <- pNonRelExpr
-                        extractExp2 (\x y -> Not $ Oper In x y) st1 st2
-                          "Bad expression in 'In' operation")
+-------------------------------------------------------------------------------
+-- performs the parsing of chains of expressions separated by operations
+
+pExprOpt :: (Exp -> Exp -> Exp) -> Stmt -> Stmt -> Bool -> Parser Stmt
+pExprOpt op1 t0 t1 outP = pNRLP op1 t0 t1 outP  
+                            <|> pNRHP op1 t0 t1 outP
+                            <|> pRelOp op1 t0 t1 outP
+                            <|> extractExp2 op1 t0 t1 "Error"
 
 
-pNonRelExprOpt :: Stmt -> Parser Stmt
-pNonRelExprOpt st1 = (do 
-                        symbol '+'
-                        st2 <- pExpr
-                        extractExp2 
-                          (Oper Plus) st1 st2 
-                            "Bad expression in 'Plus' operation")
-                      <|> (do
-                            symbol '-'
-                            st2 <- pExpr
-                            extractExp2 (Oper Minus) st1 st2 
-                              "Bad expression in 'Minus' operation")
-                      <|> (do
-                            symbol '*'
-                            st2 <- pExpr
-                            extractExp2 (Oper Times) st1 st2
-                              "Bad expression in 'Times' operation")
-                      <|> (do
-                            longSymbol "//"
-                            st2 <- pExpr
-                            extractExp2 (Oper Div) st1 st2
-                              "Bad expression in 'Div' operation")
+{- parses Non-Relational operations -}
+pNRop :: (Exp -> Exp -> Exp) -> Stmt -> Stmt -> Bool -> Parser Stmt
+pNRop op1 t0 t1 outP = pNRLP op1 t0 t1 outP  
+                        <|> pNRHP op1 t0 t1 outP
+                        <|> extractExp2 op1 t0 t1 "Error"
 
+
+{- parses Non-Relational Low Priority operations -}
+pNRLP :: (Exp -> Exp -> Exp) -> Stmt -> Stmt -> Bool -> Parser Stmt
+pNRLP op1 t0 t1 _ = 
+  (do
+    symbol '+'
+    st2 <- pTerm
+    st1 <- extractExp2 op1 t0 t1 "Error"
+    pExprOpt (Oper Plus) st1 st2 False) 
+  <|> (do
+        symbol '-'
+        st2 <- pTerm
+        st1 <- extractExp2 op1 t0 t1 "Error"
+        pExprOpt (Oper Minus) st1 st2 False)
+
+
+{- Defines the order of the operations in accordance with the priorities of 
+  the passed operation. -}
+priorityRels :: (Exp -> Exp -> Exp) -> Stmt -> Stmt -> 
+                (Exp -> Exp -> Exp) -> Stmt -> Bool -> Parser Stmt
+priorityRels op1 t0 t1 op2 t2 False = do 
+                                        st2 <- extractExp2 op2 t1 t2 "Error"
+                                        pExprOpt op1 t0 st2 False
+priorityRels op1 t0 t1 op2 t2 True  = do
+                                        st1 <- extractExp2 op1 t0 t1 "Error"
+                                        pExprOpt op2 st1 t2 True
+
+
+{- Parses Non-Relational High Priority operations -}
+pNRHP :: (Exp -> Exp -> Exp) -> Stmt -> Stmt -> Bool -> Parser Stmt
+pNRHP op1 t0 t1 outP =
+  (do
+    symbol '*'
+    t2 <- pTerm
+    priorityRels op1 t0 t1 (Oper Times) t2 outP)
+  <|> (do
+        longSymbol "//"
+        t2 <- pTerm
+        priorityRels op1 t0 t1 (Oper Div) t2 outP)
+  <|> (do
+        symbol '%'
+        t2 <- pTerm
+        priorityRels op1 t0 t1 (Oper Mod) t2 outP)
+
+
+{- Parses relational operations. -}
+pRelOp :: (Exp -> Exp -> Exp) -> Stmt -> Stmt -> Bool -> Parser Stmt
+pRelOp op1 t0 t1 _ =
+  (do
+    st1 <- extractExp2 op1 t0 t1 "error"
+    longSymbol "=="
+    st2 <- pTerm
+    pNRop (Oper Eq) st1 st2 False)
+  <|> (do
+        st1 <- extractExp2 op1 t0 t1 "error"
+        longSymbol "!="
+        st2 <- pTerm
+        pNRop (\x y -> Not $ Oper Eq x y) st1 st2 False)
+  <|> (do
+        st1 <- extractExp2 op1 t0 t1 "error"
+        symbol '<'
+        st2 <- pTerm
+        pNRop (Oper Less) st1 st2 False)
+  <|> (do
+        st1 <- extractExp2 op1 t0 t1 "error"
+        longSymbol "<="
+        st2 <- pTerm
+        pNRop (\x y -> Not $ Oper Greater x y) st1 st2 False)
+  <|> (do
+        st1 <- extractExp2 op1 t0 t1 "error"
+        symbol '>'
+        st2 <- pTerm
+        pNRop (Oper Greater) st1 st2 False)
+  <|> (do
+        st1 <- extractExp2 op1 t0 t1 "error"
+        longSymbol ">="
+        st2 <- pTerm
+        pNRop (\x y -> Not $ Oper Less x y) st1 st2 False)
+  <|> (do
+        st1 <- extractExp2 op1 t0 t1 "error"
+        keyword "in"
+        st2 <- pTerm
+        pNRop (Oper In) st1 st2 False)
+  <|> (do
+        st1 <- extractExp2 op1 t0 t1 "error"
+        keyword "not"
+        keyword "in"
+        st2 <- pTerm
+        pNRop (\x y -> Not $ Oper In x y) st1 st2 False)
+
+
+-------------------------------------------------------------------------------
+-- Parsing of terms
 
 pTerm :: Parser Stmt
 pTerm = (do
@@ -505,7 +595,6 @@ pExprCon = (do
 
 
 -------------------------------------------------------------------------------
-
 
 parseString :: String -> Either ParseError Program
 parseString s = case readP_to_S (pProgram <* eof) s of
